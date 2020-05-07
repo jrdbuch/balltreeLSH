@@ -154,14 +154,28 @@ class BallTree(object):
         split_dim = self.find_dimension_with_greatest_spread(data_in_node)
         median = np.median(data_in_node[:,split_dim], axis=0)
 
+        data_index_eq_median = np.intersect1d(
+            np.argwhere(self.data[:, split_dim] == median),
+            data_index
+        )
+
         data_index_child_1 = np.intersect1d(
-            np.argwhere(self.data[:, split_dim] >= median).flatten(), 
+            np.argwhere(self.data[:, split_dim] > median).flatten(), 
             data_index
         )
         
         data_index_child_2 = np.intersect1d(
             np.argwhere(self.data[:, split_dim] < median).flatten(), 
             data_index
+        )
+        data_index_child_1 = np.append(
+            data_index_child_1,
+            data_index_eq_median[:int(len(data_index_eq_median)/2.)]
+        )
+
+        data_index_child_2 = np.append(
+            data_index_child_2,
+            data_index_eq_median[int(len(data_index_eq_median)/2.):]
         )
 
         assert set(data_index_child_1).union(set(data_index_child_2)) == set(data_index)
@@ -182,7 +196,7 @@ def brute_force_nn(q, data):
     min_radius = radii[min_radius_index]
     return data[min_radius_index], min_radius
 
-def test_tree(N=1000, D=5, R=0.3):
+def test_tree(N=1000, D=784, R=0):
     rseed = np.random.randint(10000)
     print("-------------------------------------------------------")
     print("1-NN of {} points in {} dimensions".format(N, D))
@@ -190,7 +204,7 @@ def test_tree(N=1000, D=5, R=0.3):
     np.random.seed(rseed)
     X = np.random.random((N, D))
     bt = BallTree(X, max_leaf_radius=R)
-    q = np.array([1,1,1,1,1]) * 0.5
+    q = np.ones((D,)) * 0.5
     nn, nn_dist = bt.query(q)
     nn_actual, nn_actual_dist = brute_force_nn(q, X)
     print('Ball tree NN {}, same as brute force->{}'.format(nn, all(nn==nn_actual)))
