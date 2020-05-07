@@ -15,6 +15,9 @@ class Node(object):
     child_2_node = attr.ib()
     data_index = attr.ib(type=np.ndarray)  # 1-d numpy array of sample indexes that are in node
 
+    def __eq__(self, other):
+        return other.index == self.index
+
 
 class BallTree(object):
     def __init__(self, data, max_leaf_radius):
@@ -100,16 +103,25 @@ class BallTree(object):
         min_radius = radii[min_radius_index]
         return data[min_radius_index], min_radius
 
-    def query(self, q):
+    def query(self, q, start_node=None):
+        if start_node is None:
+            start_node = self.root_node
+
         q = np.asarray(q, dtype=float).reshape(1,-1)
         self.nn_estimate = np.zeros(q.shape)
         self.nn_distance = np.inf 
+        self.leaves_explored = 0
 
         if q.size != self.n_features:
             raise ValueError("query data dimension must "
                              "match training data dimension")
 
-        self._query_recursive(q, self.root_node)
+        if start_node.is_root:
+            self._query_recursive(q, start_node)
+            print('explored {} leaves'.format(self.leaves_explored))
+        if start_node.is_leaf:
+            self._query_bottom_up(q, start_node, 100)
+            print('explored {} leaves'.format(self.leaves_explored))
 
         return self.nn_estimate, self.nn_distance
 
@@ -123,6 +135,7 @@ class BallTree(object):
         #------------------------------------------------------------
         # Case 2: this is a leaf node.  Update set of nearby points
         elif node.is_leaf:
+            self.leaves_explored += 1
             data_in_leaf = self.data[node.data_index]
             nn_canidate, min_radius = self._calculate_min_radius(q, data_in_leaf)
             if min_radius < self.nn_distance:
@@ -146,6 +159,16 @@ class BallTree(object):
             else:
                 self._query_recursive(q, node.child_2_node)
                 self._query_recursive(q, node.child_1_node)
+
+    def _query_bottom_up(self, q, node, leaf_explore_limit):
+        # nodes_visited = [] #todo save computation time here instead of recomuptering dist
+        while True:
+            print('qr on node {}'.format(node.index))
+            self._query_recursive(q, node)
+            node = node.parent_node
+            if node is None or self.leaves_explored > leaf_explore_limit:
+                break 
+
 
     def _partition_indices(self, data_index):
         # Find the split dimension, ie dimension with largest spread
