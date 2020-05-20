@@ -7,62 +7,59 @@ from lsh import LSH, guassian_hash_generator
 import itertools
 import operator
 
-def most_common(L):
-  # get an iterable of (item, iterable) pairs
-  SL = sorted((x, i) for i, x in enumerate(L))
-  # print 'SL:', SL
-  groups = itertools.groupby(SL, key=operator.itemgetter(0))
-  # auxiliary function to get "quality" for an item
-  def _auxfun(g):
-    item, iterable = g
-    count = 0
-    min_index = len(L)
-    for _, where in iterable:
-      count += 1
-      min_index = min(min_index, where)
-    # print 'item %r, count %r, minind %r' % (item, count, min_index)
-    return count, -min_index
-  # pick the highest-count/earliest item
-  return max(groups, key=_auxfun)[0]
-
 
 class BallTreeLSH(object):
-    def __init__(self, bt, lsh):
-        self.bt = bt
+    def __init__(self, balltree, lsh):
+        self.balltree = balltree
         self.lsh = lsh
-        self.bucket_to_ball = {} # (hashed_sample, table) -> leaf_node
+        self.bucket_to_balls = {} # (hashed_sample, table) -> [leaf_node,]
 
-        self._build_bucket_to_ball()
+        self._build_bucket_to_balls()
 
-    def _build_bucket_to_ball(self):
-        leaf_nodes = [node for node in self.bt.nodes if node.is_leaf]
+    def _build_bucket_to_balls(self):
 
+        # get all leaf nodes
+        leaf_nodes = [node for node in self.balltree.nodes if node.is_leaf]
+
+        # associate the hash bucket of a sample with ball tree leaf nodes
         for leaf_node in leaf_nodes:
-            for table in range(self.lsh.num_tables):
-                for sample in self.lsh.hash_tables[leaf_node.data_index]:
-                    sample = sample[:,table]
-                    self.bucket_to_ball[(table, hash(str(sample)))] = leaf_node
+            for hash_table in range(self.lsh.num_tables):
+                for hashed_datum in self.lsh.hash_tables[leaf_node.data_index]:
+                    hashed_datum = hashed_datum[:,hash_table]
+                    bucket_key = (hash_table, hash(str(hashed_datum)))
 
-    def query(self, q):
+                    # a bucket can be associated with many possible balls
+                    if self.bucket_to_balls.get(bucket_key) is None:
+                        self.bucket_to_balls[bucket_key] = [leaf_node]
+                    else:
+                        self.bucket_to_balls[bucket_key].append(leaf_node) 
+
+    def query(self, q, performance_limit=np.inf):
         canidate_balls = []
         q = np.array(q, dtype=float).reshape(-1)
-        q_hash = self.lsh._hash_datum(q)
 
+        # hash query using LSH
+        q_hash = self.lsh._hash_datum(q)  # shape (hashes_per_table, table)
+
+        # generate canidate balls
         for table in range(q_hash.shape[-1]):
-            canidate_ball = self.bucket_to_ball.get((table, hash(str(q_hash[:,table]))))
-            if canidate_ball is not None:
-                canidate_balls.append(canidate_ball)
+            balls_in_bucket = self.bucket_to_balls.get((table, hash(str(q_hash[:,table]))))
+            if balls_in_bucket is not None:
+                canidate_balls += balls_in_bucket
 
         if len(canidate_balls) > 0:
-            best_canidate = most_common(canidate_balls) 
-            print('canidate balls', len(canidate_balls))
-            print('dist to best_canidate ball centrod', np.linalg.norm(best_canidate.centroid-q))
-            print(best_canidate.index, best_canidate.is_leaf, len(best_canidate.data_index))
+            print('num of canidate balls', len(canidate_balls))
+            print('data in all canidate balls', sum([len(node.data_index) for node in canidate_balls]))
 
-            nn_estimate = self.bt.query(q, start_node=best_canidate)
+            nn_estimate = self.balltree.query_bottom_up(
+                q=q, 
+                start_nodes=canidate_balls, 
+                performance_limit=performance_limit
+            )
             return nn_estimate
         
         else:
+            print('No canidate balls generated')
             return None
 
 

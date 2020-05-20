@@ -2,14 +2,26 @@ from __future__ import division, print_function
 import numpy as np
 import matplotlib.pyplot as plt
 import attr
+from collections import deque
+import sys
+import os
+
+sys.path.append(os.getcwd())
+from utils import(
+    brute_force_nn,
+    calculate_centroid,
+    calculate_max_radius,
+    calculate_min_radius,
+    find_dimension_with_greatest_spread
+)
 
 @attr.s
 class Node(object):
     index = attr.ib(type=int)
     centroid = attr.ib(type=np.ndarray)
     radius = attr.ib(type=float)
-    is_root = attr.ib(type=float)
-    is_leaf = attr.ib(type=float)
+    is_root = attr.ib(type=bool)
+    is_leaf = attr.ib(type=bool)
     parent_node = attr.ib()
     child_1_node = attr.ib()
     child_2_node = attr.ib()
@@ -18,12 +30,15 @@ class Node(object):
     def __eq__(self, other):
         return other.index == self.index
 
+    def __str__(self):
+        return ('Node: \nindex {}, is_root {}, is_leaf {}, num_samples {}'
+                .format(self.index, self.is_root, self.is_leaf, len(self.data_index)))
+
 
 class BallTree(object):
-    def __init__(self, data, max_leaf_radius):
-        # todo add configurable distance metrix
+    def __init__(self, data, max_leaf_samples):
         self.data = data
-        self.max_leaf_radius = max_leaf_radius
+        self.max_leaf_samples = max_leaf_samples
 
         # data[sample index, feature index]
         self.n_samples = self.data.shape[0]
@@ -47,8 +62,8 @@ class BallTree(object):
         """
         # build node
         data_in_node = self.data[data_index]
-        node_centroid = self.calculate_centroid(data_in_node)
-        _, node_radius = self._calculate_max_radius(node_centroid, data_in_node)
+        node_centroid = calculate_centroid(data_in_node)
+        node_radius = calculate_max_radius(node_centroid, data_in_node)
 
         node = Node(
             index=i_node,
@@ -63,72 +78,66 @@ class BallTree(object):
         )
         self.nodes.append(node)
 
-        # recursive stop condition
-        if node.radius <= self.max_leaf_radius:
+        if len(data_index) <= self.max_leaf_samples:
+            # leaf node
             node.is_leaf = True
-            return node
+        else:
+            # internal node
+            node.is_leaf = False
+            data_index_child_1, data_index_child_2 = self._partition_indices(data_index)
 
-        # split node and recursively construct child nodes.
-        node.is_leaf = False
-        data_index_child_1, data_index_child_2 = self._partition_indices(data_index)
-
-        node.child_1_node = self._recursive_build(2 * i_node + 1, data_index_child_1, node)
-        node.child_2_node = self._recursive_build(2 * i_node + 2, data_index_child_2, node)
+            node.child_1_node = self._recursive_build(2 * i_node + 1, data_index_child_1, node)
+            node.child_2_node = self._recursive_build(2 * i_node + 2, data_index_child_2, node)
 
         return node
 
-    @staticmethod
-    def calculate_centroid(data):
-        return np.mean(data, axis=0)
-
-    @staticmethod 
-    def find_dimension_with_greatest_spread(data):
-        return np.argmax(np.max(data, axis=0) - np.min(data, axis=0))
-
-    @staticmethod
-    def _calculate_radii(centroid, data):
-        diff = np.tile(centroid, (data.shape[0], 1)) - data  # TODO make more efficient
-        radii = np.linalg.norm(diff, axis=1)
-        return radii 
-
-    def _calculate_max_radius(self, centroid, data):
-        radii = self._calculate_radii(centroid, data)
-        max_radius_index = np.argmax(radii)
-        max_radius = radii[max_radius_index]
-        return data[max_radius_index], max_radius
-
-    def _calculate_min_radius(self, centroid, data):
-        radii = self._calculate_radii(centroid, data)
-        min_radius_index = np.argmin(radii)
-        min_radius = radii[min_radius_index]
-        return data[min_radius_index], min_radius
-
-    def query(self, q, start_node=None):
-        if start_node is None:
-            start_node = self.root_node
-
-        q = np.asarray(q, dtype=float).reshape(1,-1)
-        self.nn_estimate = np.zeros(q.shape)
+    def _reset_query(self):
+        self.nn_estimate = np.zeros(self.n_features)
         self.nn_distance = np.inf 
         self.leaves_explored = 0
+        self.distance_calcs = 0
 
+    def query_top_down(self, q, performance_limit=np.inf):
+        """ Standard ball tree query mechansim. Start from root node
+        and work your way down the tree to a leafe not, then backtrack.
+        :param q np.ndarray: query point
+        :param performance_limit int: 
+        :returns (float,float): nearest neighbor data point and distance to
+            nearest neighbor
+         """
+        self._reset_query()
         if q.size != self.n_features:
             raise ValueError("query data dimension must "
                              "match training data dimension")
 
-        if start_node.is_root:
-            self._query_recursive(q, start_node)
-            print('explored {} leaves'.format(self.leaves_explored))
-        if start_node.is_leaf:
-            self._query_bottom_up(q, start_node, 100)
-            print('explored {} leaves'.format(self.leaves_explored))
+        self._query_recursive(q, self.root_node)
 
-        return self.nn_estimate, self.nn_distance
+        return self.nn_estimate
+
+    def query_bottom_up(self, q, start_nodes, performance_limit=np.inf):
+        self._reset_query()
+
+        # self.distance_calcs += len(start_nodes)
+        start_nodes.sort(key=lambda node: np.linalg.norm(node.centroid - q))
+
+        node_deque = deque(start_nodes)
+
+        # parrallel bottom up search of ball tree
+        while node_deque and self.distance_calcs < performance_limit:
+            node = node_deque.popleft()
+
+            if not node.is_root:
+                self._query_recursive(q, node.parent_node)
+                node_deque.append(node.parent_node)
+
+        return self.nn_estimate
 
     def _query_recursive(self, q, node):
         #------------------------------------------------------------
         # Case 1: query point is outside node radius:
         #         trim it from the query
+        
+        self.distance_calcs += 1
         if np.linalg.norm(q - node.centroid) - node.radius >= self.nn_distance:
             pass 
 
@@ -137,7 +146,8 @@ class BallTree(object):
         elif node.is_leaf:
             self.leaves_explored += 1
             data_in_leaf = self.data[node.data_index]
-            nn_canidate, min_radius = self._calculate_min_radius(q, data_in_leaf)
+            self.distance_calcs += len(data_in_leaf)
+            nn_canidate, min_radius = calculate_min_radius(q, data_in_leaf)
             if min_radius < self.nn_distance:
                 self.nn_distance = min_radius
                 self.nn_estimate = nn_canidate 
@@ -146,6 +156,7 @@ class BallTree(object):
         # Case 3: Node is not a leaf.  Recursively query subnodes
         #         starting with the closest
         else:
+            self.distance_calcs += 2
             distance_to_child_1_centroid = \
                 np.linalg.norm(q - node.child_1_node.centroid)
             
@@ -160,21 +171,13 @@ class BallTree(object):
                 self._query_recursive(q, node.child_2_node)
                 self._query_recursive(q, node.child_1_node)
 
-    def _query_bottom_up(self, q, node, leaf_explore_limit):
-        # nodes_visited = [] #todo save computation time here instead of recomuptering dist
-        while True:
-            print('qr on node {}'.format(node.index))
-            self._query_recursive(q, node)
-            node = node.parent_node
-            if node is None or self.leaves_explored > leaf_explore_limit:
-                break 
-
 
     def _partition_indices(self, data_index):
-        # Find the split dimension, ie dimension with largest spread
+        """ Find dimension with largest spread and split dataset """
+
         data_in_node = self.data[data_index]
 
-        split_dim = self.find_dimension_with_greatest_spread(data_in_node)
+        split_dim = find_dimension_with_greatest_spread(data_in_node)
         median = np.median(data_in_node[:,split_dim], axis=0)
 
         data_index_eq_median = np.intersect1d(
@@ -212,12 +215,6 @@ def plot_ball(ax, node, data, color='k'):
     plt.scatter(node.centroid[0], node.centroid[1], c=color, marker='x')
     plt.scatter(data[:,0], data[:,1], c=color)
 
-def brute_force_nn(q, data):
-    diff = np.tile(q, (data.shape[0], 1)) - data
-    radii = np.linalg.norm(diff, axis=1)
-    min_radius_index = np.argmin(radii)
-    min_radius = radii[min_radius_index]
-    return data[min_radius_index], min_radius
 
 def test_tree(N=1000, D=784, R=0):
     rseed = np.random.randint(10000)

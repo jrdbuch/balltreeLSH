@@ -40,14 +40,34 @@ class LSH(object):
                 datum_hash[j,i] = self.hash_fns[(j,i)](datum) 
         return datum_hash
 
-    def query(self, q):
+    def query(self, q, performance_limit=np.inf):
         q = np.array(q, dtype=float).reshape(-1)
         assert q.size == self.data.shape[1]
         q_hash = self._hash_datum(q)
 
+        # generate NN canidates via LSH
         temp = np.any(np.all(np.equal(q_hash, self.hash_tables), axis=1), axis=-1)
         canidates_indices = np.argwhere(temp).flatten()
-        return self.data[canidates_indices]
+
+        canidate_samples = self.data[canidates_indices]
+
+        # brute force NN search over canidates
+        distance_calcs = 0
+        nn_distance = np.inf
+        nn_estimate = None
+        for canidate in canidate_samples:
+            distance = np.linalg.norm(canidate - q)
+            distance_calcs += 1
+         
+            if distance < nn_distance:
+                nn_distance = distance
+                nn_estimate = canidate
+         
+            if distance_calcs >= performance_limit:
+                break
+
+        return nn_estimate, len(canidate_samples)
+
 
 def test_lsh(N=10000, D=2, HPT=100, T=10):
     rseed = np.random.randint(10000)
